@@ -196,8 +196,30 @@ identical to the value function while having genuinely different futures.
 **Sessions vary in length**, so a fixed-length rollout will slice through the
 middle of them. That is fine, but the bootstrap has to be correct at the seam.
 
-`etfs/game.py` reports which kind of transition just happened, and `etfs/ppo.py`
-is a reference agent that handles all four correctly.
+**The reward has a horizon.** The training reward is the differential Sharpe
+ratio, which is a *differential*: in a stationary regime its expectation is
+about zero however good that regime is. It only telescopes to terminal Sharpe
+over a complete, undiscounted episode. Run it over a multi-year window with
+bootstrapped rollouts and the sum never completes -- at which point holding cash,
+which pays exactly zero forever, becomes a local optimum with no gradient out of
+it. Measured: two of five seeds collapsed to cash and returned exactly zero.
+
+Fixing that means matching the horizon to the reward -- short fixed-length
+episodes from sampled start dates, with `gamma = 1.0`:
+
+| setting | why |
+|---|---|
+| `episode_length = 45` | short enough for credit to reach the first action |
+| `gamma_daily = 1.0` | the DSR sum only telescopes undiscounted |
+| `dsr_warmup` well under the episode | at or above it, *every* reward is zero |
+| `dsr_eta ~ 0.08` | the moments must adapt inside a 45-day horizon |
+
+The warmup coupling is the sharp edge: the default of 50 exceeds a 45-day
+episode, so every reward in it is exactly zero and nothing is learned, silently.
+
+`etfs/game.py` reports which kind of transition just happened, `etfs/features.py`
+supplies the indicator panel as observations, and `etfs/ppo.py` is a reference
+agent that handles all of this correctly.
 
 ---
 
@@ -214,5 +236,7 @@ is a reference agent that handles all four correctly.
    trade, padded with zero volume. Allocation changes on those should presumably
    be rejected rather than executed at a synthetic price.
 4. **Liquidity.** Whether an allocation is capped relative to a fund's volume.
-5. **Universe size.** The panel holds 76 ETFs; the reference PPO code is written
-   for 25. Either is workable, but the action space scales with it.
+5. **Universe size.** The panel holds 76 ETFs, and the action space scales with
+   it. Note also that `trade_fraction = 0.10` means an agent can hold at most
+   10 positions, so the equal-weight benchmark is not reachable through the
+   action space at all -- it is a market reference, not a target to imitate.
