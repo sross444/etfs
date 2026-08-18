@@ -267,9 +267,17 @@ class PPOAgent:
 
 
 def train(env, agent, total_updates=100, rollout_steps=2048,
-          update_epochs=10, minibatch_size=256, log_every=10, verbose=True):
+          update_epochs=10, minibatch_size=256, log_every=10, verbose=True,
+          eval_fn=None, eval_every=None):
     """Rollouts may slice through the middle of a session; that is fine, because
-    the bootstrap value at the seam is a genuine state value either way."""
+    the bootstrap value at the seam is a genuine state value either way.
+
+    Args:
+        eval_fn: optional `agent -> dict` scored on held-out data every
+            `eval_every` updates. Training longer is not automatically training
+            better, and without a held-out curve there is no way to see the
+            point where it stops helping.
+    """
     obs, _ = env.reset()
     history = []
 
@@ -304,6 +312,8 @@ def train(env, agent, total_updates=100, rollout_steps=2048,
         row = {"update": update + 1, "market_days": market_steps,
                "mean_reward": mean_reward, "mean_return": mean_return,
                "sharpe": ann_sharpe(returns_seen), "nav": info["nav"], **metrics}
+        if eval_fn is not None and eval_every and (update + 1) % eval_every == 0:
+            row.update({f"val_{k}": v for k, v in eval_fn(agent).items()})
         history.append(row)
 
         if verbose and (update + 1) % log_every == 0:
