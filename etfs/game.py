@@ -42,6 +42,7 @@ class TradingGame:
         starting_capital: float = 100_000.0,
         starting_weights: np.ndarray | None = None,
         window: tuple[int, int] | None = None,
+        episode_length: int | None = None,
         dates=None,
         reward_mode: str = "dsr",
         dsr_eta: float = 0.02,
@@ -60,6 +61,13 @@ class TradingGame:
             window: `(lo, hi)` bar indices the episode is confined to. This is
                 how train/validate/test separation is enforced -- an episode
                 cannot see or trade outside its own window.
+            episode_length: if set, each episode is this many market days,
+                starting from a uniformly sampled date inside the window. Short
+                fixed-length episodes are what let the DSR reward work as
+                intended: it telescopes to terminal Sharpe only over a complete,
+                undiscounted episode, so the horizon has to be short enough for
+                credit to actually reach the start. `None` runs the whole
+                window as one episode, which is what evaluation wants.
             dates: optional date labels, one per bar, carried for reporting.
             starting_weights: optional opening allocation, defaults to all cash.
             reward_mode: `"dsr"` for the differential Sharpe ratio, or
@@ -112,6 +120,7 @@ class TradingGame:
         # Valid execution days: need `lookback` observable returns before t,
         # and open[t+1] after it to close out the holding period.
         self.dates = list(dates) if dates is not None else None
+        self.episode_length = None if episode_length is None else int(episode_length)
         self.first_step = self.lookback + 1
         self.last_step = self.n_steps - 2
         if window is not None:
@@ -126,6 +135,7 @@ class TradingGame:
                 f"last_step={self.last_step}; need more bars or a shorter lookback"
             )
 
+        self._episode_end = None
         self.t = None
         self.held_w = None
         self.work_w = None
@@ -134,12 +144,31 @@ class TradingGame:
 
     # -- episode lifecycle ------------------------------------------------
 
-    def reset(self, start: int | None = None, random_start: bool = False):
-        if random_start:
-            start = int(self.rng.integers(self.first_step, self.last_step))
-        self.t = self.first_step if start is None else int(
-            np.clip(start, self.first_step, self.last_step)
-        )
+    def reset(self, start: int | None = None, random_start: bool | None = None):
+        """Begin an episode.
+
+        With `episode_length` set, the start date is sampled uniformly inside
+        the window unless one is given, so training sees many different market
+        regimes rather than replaying one path.
+        """
+        if random_start is None:
+            random_start = self.episode_length is not None and start is None
+
+        if self.episode_length is not None:
+            latest = max(self.first_step, self.last_step - self.episode_length)
+            if random_start:
+                start = int(self.rng.integers(self.first_step, latest + 1))
+            self.t = self.first_step if start is None else int(
+                np.clip(start, self.first_step, latest)
+            )
+            self._episode_end = min(self.t + self.episode_length, self.last_step)
+        else:
+            if random_start:
+                start = int(self.rng.integers(self.first_step, self.last_step))
+            self.t = self.first_step if start is None else int(
+                np.clip(start, self.first_step, self.last_step)
+            )
+            self._episode_end = self.last_step
         self.held_w = self.starting_weights.copy()
         self.work_w = self.held_w.copy()
         self.nav = self.starting_capital
@@ -206,7 +235,7 @@ class TradingGame:
         self.t += 1
         self.work_w = self.held_w.copy()
         self.n_actions = 0
-        terminated = self.t >= self.last_step
+        terminated = self.t >= self._episode_end
 
         info = {
             "advances_market": True,

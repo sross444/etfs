@@ -313,3 +313,75 @@ def test_dsr_state_resets_with_the_episode():
 def test_rejects_unknown_reward_mode():
     with pytest.raises(ValueError, match="reward_mode"):
         TradingGame(prices(), prices(), lookback=20, reward_mode="sortino")
+
+
+# -- fixed-length sampled episodes ------------------------------------------
+
+def test_episodes_run_exactly_the_requested_length():
+    g = game(episode_length=15, seed=1)
+    for _ in range(5):
+        g.reset()
+        n = 0
+        while True:
+            _, _, done, _ = g.step(STOP, -1)
+            n += 1
+            if done:
+                break
+        assert n == 15
+
+
+def test_episode_starts_are_sampled_across_the_window():
+    """Replaying one path teaches one regime; sampling teaches many."""
+    g = game(episode_length=15, seed=3)
+    starts = {g.reset()[1]["t"] for _ in range(40)}
+    assert len(starts) > 20
+
+
+def test_a_given_start_is_honoured_for_reproducible_evaluation():
+    g = game(episode_length=15, seed=3)
+    _, info = g.reset(start=60)
+    assert info["t"] == 60
+
+
+def test_episodes_never_run_past_the_window():
+    g = game(episode_length=15, seed=5)
+    for _ in range(30):
+        g.reset()
+        while True:
+            _, _, done, info = g.step(STOP, -1)
+            if done:
+                break
+        assert info["t"] <= g.last_step
+
+
+def test_no_episode_length_runs_the_whole_window():
+    g = game(episode_length=None)
+    _, info = g.reset()
+    assert info["t"] == g.first_step
+    assert g._episode_end == g.last_step
+
+
+def test_warmup_longer_than_the_episode_silences_the_reward():
+    """Guards a trap: dsr_warmup >= episode_length means every reward in the
+    episode is exactly zero and nothing can be learned."""
+    g = game(reward_mode="dsr", episode_length=10, dsr_warmup=50, seed=2)
+    g.reset()
+    g.step(BUY, 0)
+    rewards = []
+    while True:
+        _, r, done, _ = g.step(STOP, -1)
+        rewards.append(r)
+        if done:
+            break
+    assert all(r == 0.0 for r in rewards)
+
+    g2 = game(reward_mode="dsr", episode_length=30, dsr_warmup=5, seed=2)
+    g2.reset()
+    g2.step(BUY, 0)
+    got = []
+    while True:
+        _, r, done, _ = g2.step(STOP, -1)
+        got.append(r)
+        if done:
+            break
+    assert any(r != 0.0 for r in got)
