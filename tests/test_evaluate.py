@@ -6,7 +6,7 @@ import pytest
 
 from etfs.evaluate import (RandomPolicy, Split, aggregate, all_cash, compare,
                            equal_weight, evaluate_policy, make_env, make_splits,
-                           simulate_weights, summarise)
+                           random_portfolio, simulate_weights, summarise, welch)
 from etfs.game import TradingGame
 
 
@@ -189,3 +189,52 @@ def test_a_split_never_touches_the_next_splits_bars():
     env = make_env(p, p, s["train"], lookback=20)
     assert env.last_step + 1 <= s["train"].hi
     assert env.last_step + 1 < s["validate"].lo + 1
+
+
+# -- selection control ------------------------------------------------------
+
+def test_random_portfolio_holds_the_requested_number_of_positions():
+    p, d = prices(), dates()
+    s = make_splits(d)["validate"]
+    r = random_portfolio(p, s, n_positions=3, seed=0)
+    assert r.avg_exposure == pytest.approx(1.0, abs=1e-9)
+    assert r.n_days > 0
+
+
+def test_random_portfolio_varies_with_the_seed():
+    """It is a control over *selection*, so different draws must differ."""
+    p, d = prices(), dates()
+    s = make_splits(d)["validate"]
+    got = {random_portfolio(p, s, n_positions=2, seed=i).total_return
+           for i in range(6)}
+    assert len(got) > 1
+
+
+def test_random_portfolio_caps_at_the_universe_size():
+    p, d = prices(), dates()
+    s = make_splits(d)["validate"]
+    r = random_portfolio(p, s, n_positions=99, seed=0)
+    assert r.avg_exposure == pytest.approx(1.0, abs=1e-9)
+
+
+# -- significance -----------------------------------------------------------
+
+def test_welch_finds_no_difference_between_identical_populations():
+    rng = np.random.default_rng(0)
+    w = welch(rng.normal(0, 1, 40), rng.normal(0, 1, 40))
+    assert w["p"] > 0.05
+
+
+def test_welch_finds_a_real_difference():
+    rng = np.random.default_rng(1)
+    w = welch(rng.normal(3, 1, 40), rng.normal(0, 1, 40))
+    assert w["p"] < 0.01 and w["diff"] > 0
+
+
+def test_welch_accounts_for_spread_not_just_means():
+    """The same gap in means is not significant when the spread is wide."""
+    rng = np.random.default_rng(2)
+    tight = welch(rng.normal(0.5, 0.1, 20), rng.normal(0.0, 0.1, 20))
+    wide = welch(rng.normal(0.5, 3.0, 20), rng.normal(0.0, 3.0, 20))
+    assert tight["p"] < wide["p"]
+    assert wide["p"] > 0.05

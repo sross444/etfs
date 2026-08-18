@@ -161,6 +161,27 @@ def equal_weight(opens: np.ndarray, split: Split, **kw) -> Report:
     return simulate_weights(opens, np.full(n, 1.0 / n), split, **kw)
 
 
+def random_portfolio(opens: np.ndarray, split: Split, n_positions: int = 10,
+                     seed: int = 0, **kw) -> Report:
+    """Hold `n_positions` randomly chosen ETFs at equal weight, bought and held.
+
+    This is the control that isolates *selection*. A working agent runs at ~1.0
+    exposure across roughly 10 positions -- which is exactly this, minus any
+    skill in choosing which ten. If an agent cannot beat this, it has learned to
+    be invested and nothing more.
+
+    Ten positions is what `trade_fraction = 0.10` allows, so unlike equal
+    weight this allocation *is* reachable through the action space.
+    """
+    rng = np.random.default_rng(seed)
+    n = opens.shape[1]
+    k = min(n_positions, n)          # weight by what is actually held, not asked for
+    w = np.zeros(n)
+    w[rng.choice(n, size=k, replace=False)] = 1.0 / k
+    kw.setdefault("name", f"random_portfolio_seed{seed}")
+    return simulate_weights(opens, w, split, **kw)
+
+
 def all_cash(opens: np.ndarray, split: Split, **kw) -> Report:
     kw.setdefault("name", "all_cash")
     return simulate_weights(opens, np.zeros(opens.shape[1]), split, **kw)
@@ -279,3 +300,20 @@ def aggregate(reports, name: str = "ppo") -> pl.DataFrame:
         **{f"{c}_std": [float(df[c].std(ddof=1)) if len(reports) > 1 else 0.0]
            for c in cols},
     })
+
+
+def welch(a, b) -> dict:
+    """Welch's t-test between two seed populations.
+
+    With seed spreads this wide, a difference in means is not a result until it
+    survives the variance. Reports the difference, its standard error and a
+    normal-approximation two-sided p-value.
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    va, vb = a.var(ddof=1) / a.size, b.var(ddof=1) / b.size
+    se = np.sqrt(va + vb)
+    diff = a.mean() - b.mean()
+    t = diff / se if se > 0 else 0.0
+    # two-sided normal approximation; adequate at n >= 15 per group
+    p = 2.0 * 0.5 * (1.0 - __import__("math").erf(abs(t) / np.sqrt(2.0))) if se > 0 else 1.0
+    return {"diff": float(diff), "se": float(se), "t": float(t), "p": float(p)}
