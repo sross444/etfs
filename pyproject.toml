@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+rl = ["torch>=2.0"]   # etfs.ppo only; the game engine itself is numpy
 
 [project.scripts]
 etfs-sync = "etfs.cli:main"
