@@ -15,6 +15,9 @@ def game(**kw):
     kw.setdefault("trade_fraction", 0.25)
     kw.setdefault("max_actions", 10)
     kw.setdefault("lookback", 20)
+    # accounting tests read `reward` directly, so default to the raw return;
+    # DSR gets its own section below
+    kw.setdefault("reward_mode", "return")
     return TradingGame(p, p, **kw)
 
 
@@ -175,7 +178,8 @@ def test_all_cash_earns_nothing_and_costs_nothing():
 
 def test_fully_invested_in_one_etf_earns_its_open_to_open_return():
     p = prices()
-    g = TradingGame(p, p, trade_fraction=1.0, max_actions=10, lookback=20)
+    g = TradingGame(p, p, trade_fraction=1.0, max_actions=10, lookback=20,
+                    reward_mode="return")
     g.reset()
     t = g.t
     g.step(BUY, 0)
@@ -252,3 +256,60 @@ def test_episode_terminates_at_the_end_of_the_panel():
         if done:
             break
     assert done
+
+
+# -- differential Sharpe reward ---------------------------------------------
+
+def test_dsr_is_the_default_reward():
+    g = game()
+    assert g.reward_mode == "return"          # helper override
+    assert TradingGame(prices(), prices(), lookback=20).reward_mode == "dsr"
+
+
+def test_dsr_mode_reports_both_reward_and_raw_return():
+    g = game(reward_mode="dsr", trade_fraction=0.5, dsr_warmup=5)
+    g.reset()
+    g.step(BUY, 0)
+    for _ in range(20):
+        _, reward, _, info = g.step(STOP, -1)
+    assert info["net_return"] != reward          # reward is the DSR, not the return
+    assert info["dsr"] == pytest.approx(reward)
+    assert "rolling_sharpe" in info
+
+
+def test_dsr_is_silent_during_warmup_then_speaks():
+    g = game(reward_mode="dsr", trade_fraction=0.5, dsr_warmup=10)
+    g.reset()
+    g.step(BUY, 0)
+    early = [g.step(STOP, -1)[1] for _ in range(9)]
+    later = [g.step(STOP, -1)[1] for _ in range(20)]
+    assert all(r == 0.0 for r in early), "DSR emitted before its moments were seeded"
+    assert any(r != 0.0 for r in later)
+
+
+def test_dsr_moments_are_visible_in_the_observation():
+    """The reward is a function of these, so omitting them breaks Markovianity."""
+    g = game(reward_mode="dsr", trade_fraction=0.5, dsr_warmup=3)
+    obs, _ = g.reset()
+    assert obs.shape[0] == g.n_etfs * 5 + 4
+    g.step(BUY, 0)
+    for _ in range(12):
+        obs, _, _, _ = g.step(STOP, -1)
+    assert obs[-2] == pytest.approx(np.clip(g.dsr.sharpe, -3, 3))
+    assert obs[-1] == pytest.approx(np.sqrt(g.dsr.variance) * 100.0)
+
+
+def test_dsr_state_resets_with_the_episode():
+    g = game(reward_mode="dsr", trade_fraction=0.5, dsr_warmup=3)
+    g.reset()
+    g.step(BUY, 0)
+    for _ in range(15):
+        g.step(STOP, -1)
+    assert g.dsr.n > 0
+    g.reset()
+    assert g.dsr.n == 0 and g.dsr.a == 0.0 and g.dsr.b == 0.0
+
+
+def test_rejects_unknown_reward_mode():
+    with pytest.raises(ValueError, match="reward_mode"):
+        TradingGame(prices(), prices(), lookback=20, reward_mode="sortino")

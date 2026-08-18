@@ -276,7 +276,7 @@ def train(env, agent, total_updates=100, rollout_steps=2048,
     for update in range(total_updates):
         rollout = RolloutBuffer()
         market_steps = 0
-        realised = []
+        rewards_seen, returns_seen = [], []
 
         for _ in range(rollout_steps):
             side, etf_id, logp, value = agent.select_action(obs)
@@ -287,7 +287,9 @@ def train(env, agent, total_updates=100, rollout_steps=2048,
 
             if info["advances_market"]:
                 market_steps += 1
-                realised.append(reward)
+                rewards_seen.append(reward)
+                # the reward may be a DSR; the realised return is separate
+                returns_seen.append(info["net_return"])
             obs = next_obs
             if done:
                 obs, _ = env.reset()
@@ -295,14 +297,19 @@ def train(env, agent, total_updates=100, rollout_steps=2048,
         _, _, _, last_value = agent.select_action(obs)
         metrics = agent.update(rollout, last_value, update_epochs, minibatch_size)
 
-        mean_r = float(np.mean(realised)) if realised else 0.0
+        from etfs.reward import sharpe as ann_sharpe
+
+        mean_reward = float(np.mean(rewards_seen)) if rewards_seen else 0.0
+        mean_return = float(np.mean(returns_seen)) if returns_seen else 0.0
         row = {"update": update + 1, "market_days": market_steps,
-               "mean_daily_return": mean_r, "nav": info["nav"], **metrics}
+               "mean_reward": mean_reward, "mean_return": mean_return,
+               "sharpe": ann_sharpe(returns_seen), "nav": info["nav"], **metrics}
         history.append(row)
 
         if verbose and (update + 1) % log_every == 0:
             print(f"update={row['update']:04d} days={market_steps:5d} "
-                  f"mean_ret={mean_r:+.5f} nav={info['nav']:,.0f} "
-                  f"pi={metrics['policy_loss']:+.4f} v={metrics['value_loss']:.5f} "
+                  f"reward={mean_reward:+.4f} ret={mean_return:+.5f} "
+                  f"sharpe={row['sharpe']:+6.2f} nav={info['nav']:,.0f} "
+                  f"pi={metrics['policy_loss']:+.4f} v={metrics['value_loss']:.4f} "
                   f"H={metrics['entropy']:.3f} kl={metrics['approx_kl']:.4f}")
     return history

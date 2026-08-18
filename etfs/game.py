@@ -21,6 +21,8 @@ holding period, and no unobservable intraday path is ever consulted.
 
 import numpy as np
 
+from etfs.reward import DifferentialSharpe
+
 BUY, SELL, STOP = 0, 1, 2
 NUM_SIDES = 3
 
@@ -39,6 +41,9 @@ class TradingGame:
         lookback: int = 20,
         starting_capital: float = 100_000.0,
         starting_weights: np.ndarray | None = None,
+        reward_mode: str = "dsr",
+        dsr_eta: float = 0.02,
+        dsr_warmup: int = 50,
         seed: int | None = None,
     ):
         """
@@ -51,6 +56,13 @@ class TradingGame:
             lookback: sessions of history in the observation.
             starting_capital: opening NAV.
             starting_weights: optional opening allocation, defaults to all cash.
+            reward_mode: `"dsr"` for the differential Sharpe ratio, or
+                `"return"` for the raw net return. DSR prices volatility as it
+                goes, so the agent optimises what the scoreboard measures --
+                but it is a differential and only telescopes to terminal Sharpe
+                under a discount near 1. See `etfs.reward`.
+            dsr_eta: DSR adaptation rate, roughly a `1/eta`-period window.
+            dsr_warmup: periods used to seed the DSR moment estimates.
         """
         opens = np.asarray(opens, dtype=np.float64)
         closes = np.asarray(closes, dtype=np.float64)
@@ -77,6 +89,11 @@ class TradingGame:
         if self.starting_weights.sum() > 1.0 + 1e-9 or (self.starting_weights < 0).any():
             raise ValueError("starting_weights must be non-negative and sum to <= 1")
 
+        if reward_mode not in ("dsr", "return"):
+            raise ValueError(f"reward_mode must be 'dsr' or 'return'; got {reward_mode!r}")
+        self.reward_mode = reward_mode
+        self.dsr = DifferentialSharpe(eta=dsr_eta, warmup=dsr_warmup)
+
         self.rng = np.random.default_rng(seed)
 
         # close-to-close returns, aligned so ret[k] belongs to bar k
@@ -84,7 +101,7 @@ class TradingGame:
         self.returns[1:] = closes[1:] / closes[:-1] - 1.0
 
         self.features_per_etf = 5
-        self.obs_dim = self.n_etfs * self.features_per_etf + 2
+        self.obs_dim = self.n_etfs * self.features_per_etf + 4
 
         # Valid execution days: need `lookback` observable returns before t,
         # and open[t+1] after it to close out the holding period.
@@ -111,6 +128,7 @@ class TradingGame:
         self.work_w = self.held_w.copy()
         self.nav = self.starting_capital
         self.n_actions = 0
+        self.dsr.reset()
         return self._observation(), {"nav": self.nav, "t": self.t}
 
     def step(self, side: int, etf_id: int):
@@ -159,6 +177,11 @@ class TradingGame:
         net = gross - cost
         self.nav *= 1.0 + net
 
+        # The DSR estimator must see every period, whichever reward is in use,
+        # so its moments stay meaningful in the observation either way.
+        differential = self.dsr.update(net)
+        reward = differential if self.reward_mode == "dsr" else net
+
         # Weights drift with the assets they are invested in.
         grown = self.work_w * (1.0 + period)
         denominator = 1.0 + gross
@@ -178,9 +201,11 @@ class TradingGame:
             "cost": cost,
             "invested": float(self.held_w.sum()),
             "forced_stop": forced,
+            "dsr": differential,
+            "rolling_sharpe": self.dsr.sharpe,
             "t": self.t,
         }
-        return self._observation(), net, terminated, info
+        return self._observation(), reward, terminated, info
 
     # -- observation ------------------------------------------------------
 
@@ -198,9 +223,13 @@ class TradingGame:
         momentum = np.prod(1.0 + window, axis=0) - 1.0
 
         per_etf = np.stack([last, mean, vol, momentum, self.work_w], axis=-1)
+        # The DSR moments are part of the state: the reward is a function of
+        # them, so without them the environment is not Markovian.
         globals_ = np.array([
             max(0.0, 1.0 - self.work_w.sum()),          # uninvested cash
             self.n_actions / max(1, self.max_actions),  # session progress
+            np.clip(self.dsr.sharpe, -3.0, 3.0),        # rolling Sharpe
+            np.sqrt(self.dsr.variance) * 100.0,         # rolling volatility
         ])
         return np.concatenate([per_etf.reshape(-1), globals_]).astype(np.float32)
 

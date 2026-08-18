@@ -203,9 +203,11 @@ is a reference agent that handles all four correctly.
 
 ## Still to define
 
-1. **Scoring.** Which risk-adjusted measure, over what window, against what
-   risk-free rate. The learning reward and the evaluation metric need not be the
-   same thing, and probably should not be.
+1. **Scoring.** The training reward is the differential Sharpe ratio (see
+   `etfs/reward.py`), which prices volatility as it goes. The *evaluation*
+   metric is still open — annualised Sharpe, Sortino and max drawdown are
+   implemented, but which one ranks agents, over what window, is undecided.
+   Reward and metric deliberately need not be the same thing.
 2. **Dividends.** Carried positions in `TLT`, `HYG` and similar earn material
    distributions. `adj_close` is in the panel; `close` is what trades.
 3. **Non-trading days.** 14 bars are flagged `imputed` — days a fund did not
