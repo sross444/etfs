@@ -43,6 +43,7 @@ class TradingGame:
         starting_weights: np.ndarray | None = None,
         window: tuple[int, int] | None = None,
         episode_length: int | None = None,
+        features: np.ndarray | None = None,
         dates=None,
         reward_mode: str = "dsr",
         dsr_eta: float = 0.02,
@@ -68,6 +69,10 @@ class TradingGame:
                 undiscounted episode, so the horizon has to be short enough for
                 credit to actually reach the start. `None` runs the whole
                 window as one episode, which is what evaluation wants.
+            features: optional `[T, n_etfs, n_features]` tensor from
+                `etfs.features`, replacing the four crude built-in features.
+                Row `k` must be knowable at the close of day `k`; the
+                observation reads row `t-1`, never row `t`.
             dates: optional date labels, one per bar, carried for reporting.
             starting_weights: optional opening allocation, defaults to all cash.
             reward_mode: `"dsr"` for the differential Sharpe ratio, or
@@ -114,7 +119,21 @@ class TradingGame:
         self.returns = np.zeros_like(closes)
         self.returns[1:] = closes[1:] / closes[:-1] - 1.0
 
-        self.features_per_etf = 5
+        self.features = None
+        if features is not None:
+            features = np.asarray(features, dtype=np.float32)
+            if features.shape[:2] != (self.n_steps, self.n_etfs):
+                raise ValueError(
+                    f"features must be [T, n_etfs, k] matching prices "
+                    f"{(self.n_steps, self.n_etfs)}; got {features.shape}"
+                )
+            self.features = features
+
+        # +1 for the working weight, which must be visible for the critic to
+        # distinguish mid-session states
+        self.features_per_etf = (
+            5 if self.features is None else self.features.shape[2] + 1
+        )
         self.obs_dim = self.n_etfs * self.features_per_etf + 4
 
         # Valid execution days: need `lookback` observable returns before t,
@@ -260,14 +279,18 @@ class TradingGame:
         Includes the *working* allocation, which is what makes two different
         mid-session states distinguishable to a value function.
         """
-        window = self.returns[self.t - self.lookback:self.t]
-
-        last = window[-1]
-        mean = window.mean(axis=0)
-        vol = window.std(axis=0) + 1e-8
-        momentum = np.prod(1.0 + window, axis=0) - 1.0
-
-        per_etf = np.stack([last, mean, vol, momentum, self.work_w], axis=-1)
+        if self.features is None:
+            window = self.returns[self.t - self.lookback:self.t]
+            last = window[-1]
+            mean = window.mean(axis=0)
+            vol = window.std(axis=0) + 1e-8
+            momentum = np.prod(1.0 + window, axis=0) - 1.0
+            per_etf = np.stack([last, mean, vol, momentum, self.work_w], axis=-1)
+        else:
+            # row t-1 is the newest row knowable before day t opens
+            per_etf = np.concatenate(
+                [self.features[self.t - 1], self.work_w[:, None]], axis=-1
+            )
         # The DSR moments are part of the state: the reward is a function of
         # them, so without them the environment is not Markovian.
         globals_ = np.array([
