@@ -41,6 +41,8 @@ class TradingGame:
         lookback: int = 20,
         starting_capital: float = 100_000.0,
         starting_weights: np.ndarray | None = None,
+        window: tuple[int, int] | None = None,
+        dates=None,
         reward_mode: str = "dsr",
         dsr_eta: float = 0.02,
         dsr_warmup: int = 50,
@@ -55,6 +57,10 @@ class TradingGame:
             max_actions: cap on actions per session; STOP is forced at the cap.
             lookback: sessions of history in the observation.
             starting_capital: opening NAV.
+            window: `(lo, hi)` bar indices the episode is confined to. This is
+                how train/validate/test separation is enforced -- an episode
+                cannot see or trade outside its own window.
+            dates: optional date labels, one per bar, carried for reporting.
             starting_weights: optional opening allocation, defaults to all cash.
             reward_mode: `"dsr"` for the differential Sharpe ratio, or
                 `"return"` for the raw net return. DSR prices volatility as it
@@ -105,10 +111,20 @@ class TradingGame:
 
         # Valid execution days: need `lookback` observable returns before t,
         # and open[t+1] after it to close out the holding period.
+        self.dates = list(dates) if dates is not None else None
         self.first_step = self.lookback + 1
         self.last_step = self.n_steps - 2
+        if window is not None:
+            lo, hi = window
+            self.first_step = max(self.first_step, int(lo))
+            # Executing at t settles at open[t+1], so the last executable bar
+            # is hi-1. Using hi would reach one bar into the next split.
+            self.last_step = min(self.last_step, int(hi) - 1)
         if self.last_step <= self.first_step:
-            raise ValueError("price history too short for this lookback")
+            raise ValueError(
+                f"window too short: first_step={self.first_step} "
+                f"last_step={self.last_step}; need more bars or a shorter lookback"
+            )
 
         self.t = None
         self.held_w = None
@@ -254,4 +270,5 @@ class TradingGame:
             raise ValueError(
                 "panel has gaps; load with common_start=True, fill_gaps=True"
             )
+        kwargs.setdefault("dates", opens["dt"].to_list())
         return cls(o, c, tickers=tickers, **kwargs)
