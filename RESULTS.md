@@ -80,6 +80,82 @@ plausible explanations are not yet separated:
   allocation from repeated 10% increments plus a STOP is a harder problem than
   emitting target weights directly.
 
+## Do the features predict anything?
+
+This is the question that should have been asked before any RL. A ridge model
+on the same 50 features, same train/validate discipline, predicting the same
+open-to-open return the game earns, cross-sectionally demeaned so it measures
+*selection* rather than market direction. (52.6% of return variance is
+cross-sectional, so selection is not a priori hopeless.)
+
+| alpha | R² in | R² out | IC in | IC out |
+|---|---|---|---|---|
+| 1 | +0.0017 | −0.0015 | +0.025 (t=4.6) | +0.003 (t=0.40) |
+| 100 | +0.0016 | −0.0011 | +0.026 (t=4.6) | +0.004 (t=0.52) |
+| 1000 | +0.0013 | −0.0005 | +0.027 (t=4.7) | +0.009 (t=0.98) |
+
+**No out-of-sample signal.** Out-of-sample R² is negative at every
+regularisation strength, and the information coefficient reaches t = 0.98 over
+501 days against a conventional threshold of 2.
+
+In-sample there is real structure: 21 of 50 features clear |t| > 2, and the
+strongest are all short-horizon reversal — `ts_3`, `rsi_3`, `er_3`, `rvwq_3`
+carry negative IC, meaning recent strength predicts weakness. Signs mostly
+survive into validate but magnitudes collapse to roughly a quarter and none
+remain significant.
+
+### The turnover trap
+
+The first version of this test looked worse than it was, and the reason is
+worth recording:
+
+| top-10 daily rebalanced | gross Sharpe | net Sharpe | turnover/day | annual cost |
+|---|---|---|---|---|
+| ridge forecast | +1.04 | +0.25 | 0.98 | 12.4% |
+| random scores | **+1.32** | −0.52 | 1.74 | 22.0% |
+
+At 5bp one way, daily reselection costs 12-22% a year and buries everything.
+But the decisive line is the gross column: **random scoring beats the ridge
+forecast even before costs.** Held rather than churned, the ridge portfolio
+lands at 0.94/0.93/1.02 for 5/21/63-day rebalancing — indistinguishable from
+random selection at 0.93 and equal weight at 1.04.
+
+**Conclusion: these features carry no exploitable cross-sectional return
+signal.** That fully explains the PPO result. There was nothing to learn, and
+an agent that churns or concentrates without signal will land below random,
+which is exactly where it landed.
+
+---
+
+## Where there *is* signal: volatility
+
+Returns are not predictable here; risk plainly is.
+
+| quantity | rank IC | t |
+|---|---|---|
+| trailing 20d vol → next 21d vol | **+0.73** | 306 |
+| features → next-day return (out of sample) | +0.009 | 0.98 |
+
+Two orders of magnitude apart. Acting on it, monthly-rebalanced inverse-volatility
+weighting on validate:
+
+| strategy | Sharpe | ann. return | max drawdown |
+|---|---|---|---|
+| inverse-vol, all 76 | **1.07** | +9.5% | **−9.6%** |
+| equal_weight | 1.04 | +12.2% | −12.7% |
+| inverse-vol, lowest-20 | 1.02 | +4.9% | −5.9% |
+| random_portfolio(10) | 0.93 | +11.3% | −13.4% |
+
+Inverse-vol edges equal weight on Sharpe and cuts drawdown by a quarter, but it
+gives up return to do it — this is risk reduction, not alpha, and the Sharpe
+gap of 0.03 is far inside the noise band.
+
+**Checked once on test, and it does not hold**: inverse-vol 0.82 against equal
+weight 1.06. Recorded here so the negative result is not quietly forgotten. Do
+not read the validate row as a strategy.
+
+---
+
 ## Standing caveats
 
 - The agent runs at ~1.0 exposure in every successful configuration, so it has
