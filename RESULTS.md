@@ -27,72 +27,58 @@ invested" lands here.
 
 ---
 
-## PPO
+## PPO: the definitive run
 
-All runs: 45-day sampled episodes, `gamma = 1.0`, DSR reward
-(`eta = 0.08`, `warmup = 10`), 5 seeds unless noted.
+20 seeds, 150 updates, `entropy_coef = 0.0002`, real 50 features, 45-day
+sampled episodes, `gamma = 1.0`. Validate split, all controls also 20 draws.
 
-| configuration | updates | Sharpe | cash collapses |
-|---|---|---|---|
-| crude 4 features | 60 | 1.23 ± 0.73 | 0/5 |
-| crude 4 features | 300 | 0.59 ± 0.55 | 2/5 |
-| real 50 features | 300 | 0.81 ± 0.91 | 0/5 |
+| strategy | Sharpe | ann. return | max drawdown | exposure |
+|---|---|---|---|---|
+| equal_weight | **1.04** | +12.2% | −12.7% | 1.00 |
+| random_policy | 0.95 ± 0.32 | +11.8% | −13.6% | 0.98 |
+| random_portfolio(10) | 0.93 ± 0.28 | +11.3% | −13.4% | 1.00 |
+| **ppo** | **0.62 ± 0.73** | +10.6% | −17.4% | 0.86 |
 
-Three things follow.
+Welch tests against the PPO seed population:
 
-**Training longer made it worse.** Same configuration, 60 → 300 updates, and
-the mean roughly halved while two seeds collapsed to holding cash. An earlier
-commit message claimed PPO beat both baselines on the strength of the 60-update
-row; that claim does not survive replication and is withdrawn. It was one draw
-from a wide distribution.
+| comparison | difference | s.e. | t | p |
+|---|---|---|---|---|
+| ppo − random_portfolio(10) | **−0.31** | 0.176 | −1.78 | 0.075 |
+| ppo − random_policy | **−0.33** | 0.179 | −1.84 | 0.066 |
+| ppo − equal_weight | **−0.42** | 0.164 | −2.54 | — |
 
-**Real features helped, and fixed the collapse.** At matched budget they beat
-the crude built-ins (0.81 vs 0.59) and every seed stayed fully invested. But the
-seed spread nearly doubled, with individual seeds at 2.40 and 0.16.
+PPO Sharpe quartiles: **−0.60 / 0.16 / 0.60 / 0.98 / 2.45**.
+Seeds beating equal weight: **4 of 20** — about what chance would give.
 
-**Nothing reliably beats random.** Across every configuration tried, the
-distribution of PPO outcomes overlaps the random policy's.
+**PPO is strictly dominated.** Lower mean than both controls, 2.4x their seed
+variance, and worse drawdown. It is not merely failing to add skill; it is
+adding variance on top of a worse allocation. Every earlier result suggesting
+otherwise -- the 1.23 at 60 updates, the 1.20 and 1.22 checkpoints, the 1.31
+first seed of this very run -- was selection from a wide distribution.
 
----
+The controls are the useful finding here. `random_portfolio(10)` holds ten
+randomly chosen ETFs and scores 0.93, statistically indistinguishable from the
+random policy at 0.95 and close to equal weight at 1.04. In this universe over
+this window, **being invested is worth ~0.95 Sharpe and selection is worth
+approximately nothing** -- which is the bar any agent has to clear.
 
-## Why: the entropy bonus was suppressing convergence
+### What this does not tell us
 
-Entropy *rose* during training in both arms (crude 3.55 → 3.71, real
-4.00 → 4.06) against a maximum of ln(3) + ln(76) = 5.43. The policy was becoming
-more random as training proceeded — diffusing, not converging.
+That the game is unwinnable. It tells us this configuration does not win. The
+plausible explanations are not yet separated:
 
-Held-out Sharpe measured every 60 updates, 3 seeds, real features:
-
-| updates | `entropy_coef = 0.005` | `entropy_coef = 0.0002` |
-|---|---|---|
-| 60 | 0.26 ± 0.53 | 0.49 ± 0.71 |
-| 120 | 0.85 ± 0.22 | **1.20 ± 0.18** |
-| 180 | 0.53 ± 0.58 | 0.96 ± 1.33 |
-| 240 | 0.56 ± 0.41 | **1.22 ± 0.32** |
-| 300 | 0.50 ± 0.15 | 0.63 ± 0.48 |
-| final entropy | 4.11 | 3.62 |
-
-The lower coefficient is better at **every** checkpoint, and its entropy
-actually falls. The default of 0.005 was too high for the size of the advantage
-signal.
-
----
-
-## The measurement is the bottleneck
-
-Seed standard deviations run from 0.15 to 1.33. With 3-5 seeds the standard
-error is roughly 0.3-0.8 Sharpe, so this bench **cannot resolve differences
-below about 0.8 Sharpe**, and several comparisons above sit inside that band.
-
-The validate curve is non-monotonic — 0.49, 1.20, 0.96, 1.22, 0.63 — with no
-clean peak. That shape is what noise looks like, not what overfitting looks
-like. Read it as "somewhere past 120 updates it stops improving", not as a
-precise optimum.
-
-Before any further tuning is worth doing, the error bars have to come down:
-more seeds, not more hyperparameters.
-
----
+- **There may be no signal** in daily technical features at this horizon. This
+  is the hypothesis that should be tested first and cheapest -- a supervised
+  cross-sectional model predicting next-day returns will answer it in minutes.
+  If a linear model cannot beat chance, no amount of RL engineering will.
+- **Capacity vastly exceeds data.** 1.1M parameters, a 3,880-dimensional
+  observation, and 1393 training bars whose 45-day episodes overlap heavily.
+- **Regime mismatch.** Train is Sharpe 0.20 with a −31% drawdown; validate is
+  1.04. A policy tuned to survive 2018-2023 should be expected to lag a bull
+  run.
+- **The action space is awkward for credit assignment.** Composing an
+  allocation from repeated 10% increments plus a STOP is a harder problem than
+  emitting target weights directly.
 
 ## Standing caveats
 
